@@ -10,36 +10,55 @@ import {
   StatusBar,
   StyleSheet,
   ActivityIndicator,
+  Image,
+  Alert,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from './lib/supabase';
+import { uploadImage } from './lib/cloudinary';
 
-const NAVY = '#102D57';
-const GOLD = '#F5BD35';
-const BG = '#F5F7FA';
-const MUTED = '#64748B';
+const COLORS = {
+  navy: '#102D57',
+  gold: '#F5BD35',
+  white: '#FFFFFF',
+  background: '#F5F7FA',
+  text: '#172B4D',
+  muted: '#697586',
+  border: '#E1E7EF',
+  paleGold: '#FFF4D5',
+  green: '#18794E',
+};
 
-const TABS = [
-  { id: 'Inicio', icon: '⌂', label: 'Início' },
-  { id: 'Descobrir', icon: '⌕', label: 'Descobrir' },
-  { id: 'Criar', icon: '+', label: 'Criar' },
-  { id: 'Projetos', icon: '▤', label: 'Projetos' },
-  { id: 'Perfil', icon: '○', label: 'Perfil' },
+const CATEGORIES = [
+  'Tecnologia',
+  'Educação',
+  'Agricultura',
+  'Empreendedorismo',
+  'Ambiente',
+  'Comunidade',
+  'Saúde',
+  'Outros',
 ];
 
 export default function App() {
   const [screen, setScreen] = useState('Inicio');
   const [user, setUser] = useState(null);
+
   const [ideas, setIdeas] = useState([]);
   const [projects, setProjects] = useState([]);
   const [challenges, setChallenges] = useState([]);
+
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
   const [search, setSearch] = useState('');
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [isRegister, setIsRegister] = useState(false);
+
+  const [ideaImageUri, setIdeaImageUri] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
@@ -48,122 +67,93 @@ export default function App() {
     let mounted = true;
 
     async function initialise() {
-      if (!supabase) {
-        setNotice('A ligação ao Supabase não está configurada.');
-        setLoading(false);
-        return;
+      try {
+        const { data, error } = await supabase.auth.getSession();
+
+        if (error) throw error;
+        if (mounted) setUser(data.session?.user ?? null);
+      } catch (error) {
+        if (mounted) setNotice(error.message || 'Não foi possível verificar a sessão.');
+      } finally {
+        if (mounted) setLoading(false);
       }
-
-      const { data, error } = await supabase.auth.getSession();
-
-      if (!mounted) return;
-
-      if (error) setNotice(error.message);
-      setUser(data?.session?.user ?? null);
-      setLoading(false);
     }
 
     initialise();
 
-    const { data: listener } = supabase
-      ? supabase.auth.onAuthStateChange((_event, session) => {
-          if (mounted) setUser(session?.user ?? null);
-        })
-      : { data: { subscription: null } };
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
 
     return () => {
       mounted = false;
-      listener?.subscription?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, []);
 
   useEffect(() => {
-    if (!user || !supabase) {
-      setIdeas([]);
-      setProjects([]);
-      setChallenges([]);
-      return;
-    }
-
     loadData();
   }, [user?.id]);
 
   async function loadData() {
-    if (!supabase || !user) return;
-
     setLoading(true);
     setNotice('');
 
     try {
-      const [ideasResult, projectsResult, challengesResult] =
-        await Promise.all([
-          supabase
-            .from('ideas')
-            .select('id, author_id, title, description, category, status, created_at')
-            .order('created_at', { ascending: false }),
-          supabase
-            .from('projects')
-            .select('id, creator_id, title, description, province, status, created_at')
-            .order('created_at', { ascending: false }),
-          supabase
-            .from('challenges')
-            .select('id, creator_id, title, description, category, status, deadline, created_at')
-            .order('created_at', { ascending: false }),
-        ]);
+      const [
+        ideasResult,
+        projectsResult,
+        challengesResult,
+      ] = await Promise.all([
+        supabase
+          .from('ideas')
+          .select('id, author_id, title, description, category, status, image_url, created_at')
+          .order('created_at', { ascending: false })
+          .limit(100),
 
-      const failed = [
-        ideasResult.error,
-        projectsResult.error,
-        challengesResult.error,
-      ].find(Boolean);
+        supabase
+          .from('projects')
+          .select('id, creator_id, title, description, province, status, created_at')
+          .order('created_at', { ascending: false })
+          .limit(100),
 
-      if (failed) throw failed;
+        supabase
+          .from('challenges')
+          .select('id, creator_id, title, description, category, status, deadline, created_at')
+          .order('created_at', { ascending: false })
+          .limit(100),
+      ]);
 
-      setIdeas(ideasResult.data ?? []);
-      setProjects(projectsResult.data ?? []);
-      setChallenges(challengesResult.data ?? []);
+      if (ideasResult.error) throw ideasResult.error;
+      if (projectsResult.error) throw projectsResult.error;
+      if (challengesResult.error) throw challengesResult.error;
+
+      setIdeas(ideasResult.data || []);
+      setProjects(projectsResult.data || []);
+      setChallenges(challengesResult.data || []);
     } catch (error) {
-      setNotice(error.message || 'Não foi possível carregar os dados.');
+      setNotice(error.message || 'Não foi possível carregar os conteúdos.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function ensureProfile(currentUser) {
-    const name =
-      currentUser.user_metadata?.display_name ||
-      currentUser.email?.split('@')[0] ||
-      'Utilizador';
-
-    const { error } = await supabase.from('profiles').upsert(
-      {
-        id: currentUser.id,
-        display_name: name,
-      },
-      { onConflict: 'id' }
-    );
-
-    if (error) throw error;
-  }
-
-  async function authenticate() {
-    if (!supabase) {
-      setNotice('O Supabase não está configurado.');
-      return;
-    }
+  async function handleAuth() {
+    setNotice('');
 
     if (!email.trim() || !password) {
-      setNotice('Preenche o e-mail e a palavra-passe.');
+      setNotice('Introduz o teu email e a palavra-passe.');
       return;
     }
 
-    if (isRegister && displayName.trim().length < 2) {
-      setNotice('Escreve o teu nome.');
+    if (isRegister && !displayName.trim()) {
+      setNotice('Introduz o teu nome.');
       return;
     }
 
     setSaving(true);
-    setNotice('');
 
     try {
       if (isRegister) {
@@ -171,30 +161,27 @@ export default function App() {
           email: email.trim(),
           password,
           options: {
-            data: { display_name: displayName.trim() },
+            data: {
+              display_name: displayName.trim(),
+            },
           },
         });
 
         if (error) throw error;
 
-        if (data.session && data.user) {
-          await ensureProfile(data.user);
+        if (data.user && data.session) {
+          await saveProfile(data.user, displayName.trim());
           setNotice('Conta criada com sucesso.');
         } else {
-          setNotice(
-            'Registo enviado. Confirma o teu e-mail antes de iniciares sessão.'
-          );
-          setIsRegister(false);
+          setNotice('Conta criada. Confirma o teu email para concluir o registo.');
         }
       } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
+        const { error } = await supabase.auth.signInWithPassword({
           email: email.trim(),
           password,
         });
 
         if (error) throw error;
-
-        if (data.user) await ensureProfile(data.user);
         setNotice('Sessão iniciada com sucesso.');
       }
     } catch (error) {
@@ -204,32 +191,69 @@ export default function App() {
     }
   }
 
-  async function signOut() {
-    const { error } = await supabase.auth.signOut();
+  async function saveProfile(authUser, name) {
+    const { error } = await supabase.from('profiles').upsert(
+      {
+        id: authUser.id,
+        display_name: name || authUser.user_metadata?.display_name || '',
+        username: authUser.user_metadata?.username || null,
+      },
+      { onConflict: 'id' }
+    );
 
-    if (error) {
-      setNotice(error.message);
-      return;
+    if (error) throw error;
+  }
+
+  async function logout() {
+    setSaving(true);
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      setNotice('Sessão terminada.');
+      setScreen('Inicio');
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível terminar a sessão.');
+    } finally {
+      setSaving(false);
     }
+  }
 
-    setNotice('Sessão terminada.');
-    setScreen('Inicio');
+  async function selectIdeaImage() {
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+      if (!permission.granted) {
+        setNotice('Permite o acesso à galeria para escolher uma imagem.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets?.length) {
+        setIdeaImageUri(result.assets[0].uri);
+        setNotice('');
+      }
+    } catch (error) {
+      setNotice(error.message || 'Não foi possível abrir a galeria.');
+    }
   }
 
   async function publishIdea() {
     if (!user) {
-      setNotice('Inicia sessão para publicares uma ideia.');
+      setNotice('Inicia sessão para publicar uma ideia.');
       setScreen('Perfil');
       return;
     }
 
-    if (title.trim().length < 3) {
-      setNotice('O título deve ter pelo menos 3 caracteres.');
-      return;
-    }
-
-    if (!description.trim()) {
-      setNotice('Escreve uma descrição para a tua ideia.');
+    if (!title.trim() || !description.trim()) {
+      setNotice('Preenche o título e a descrição da ideia.');
       return;
     }
 
@@ -237,12 +261,21 @@ export default function App() {
     setNotice('');
 
     try {
+      let imageUrl = null;
+
+      if (ideaImageUri) {
+        setNotice('A enviar a imagem...');
+        const uploaded = await uploadImage(ideaImageUri, 'ideas');
+        imageUrl = uploaded.url;
+      }
+
       const { error } = await supabase.from('ideas').insert({
         author_id: user.id,
         title: title.trim(),
         description: description.trim(),
         category: category.trim() || null,
         status: 'open',
+        image_url: imageUrl,
       });
 
       if (error) throw error;
@@ -250,8 +283,10 @@ export default function App() {
       setTitle('');
       setDescription('');
       setCategory('');
+      setIdeaImageUri(null);
+
       await loadData();
-      setNotice('A tua ideia foi guardada no Supabase.');
+      setNotice('Ideia publicada com sucesso.');
       setScreen('Inicio');
     } catch (error) {
       setNotice(error.message || 'Não foi possível publicar a ideia.');
@@ -260,359 +295,438 @@ export default function App() {
     }
   }
 
-  const filteredIdeas = ideas.filter((idea) =>
-    `${idea.title} ${idea.description} ${idea.category || ''}`
-      .toLowerCase()
-      .includes(search.toLowerCase())
-  );
+  const filteredIdeas = ideas.filter((idea) => {
+    const text = `${idea.title || ''} ${idea.description || ''} ${idea.category || ''}`;
+    return text.toLowerCase().includes(search.toLowerCase());
+  });
 
   function Header() {
     return (
       <View style={styles.header}>
-        <View>
-          <Text style={styles.logo}>
-            KON<Text style={styles.logoGold}>E</Text>CTA
-          </Text>
-          <Text style={styles.tagline}>
-            Ideias que unem. Pessoas que realizam.
-          </Text>
-        </View>
+        <TouchableOpacity onPress={() => setScreen('Inicio')}>
+          <Text style={styles.logo}>KONECTA</Text>
+          <Text style={styles.tagline}>Ideias que unem. Pessoas que realizam.</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
-          style={styles.notification}
-          onPress={loadData}
-          accessibilityLabel="Actualizar dados"
+          style={styles.profileButton}
+          onPress={() => setScreen('Perfil')}
         >
-          <Text style={styles.notificationText}>↻</Text>
+          <Text style={styles.profileButtonText}>
+            {user ? 'Perfil' : 'Entrar'}
+          </Text>
         </TouchableOpacity>
       </View>
     );
   }
 
+  function Notice() {
+    if (!notice) return null;
+
+    return (
+      <TouchableOpacity
+        style={styles.notice}
+        onPress={() => setNotice('')}
+      >
+        <Text style={styles.noticeText}>{notice}</Text>
+      </TouchableOpacity>
+    );
+  }
+
   function IdeaCard({ idea }) {
     return (
-      <View style={styles.ideaCard}>
-        <View style={styles.categoryRow}>
-          <View style={styles.categoryBadge}>
-            <Text style={styles.categoryText}>
-              {idea.category || 'Comunidade'}
-            </Text>
-          </View>
-          <Text style={styles.smallText}>
+      <View style={styles.card}>
+        <View style={styles.cardTop}>
+          <Text style={styles.categoryBadge}>
+            {idea.category || 'Ideia da comunidade'}
+          </Text>
+          <Text style={styles.statusText}>
             {idea.status === 'open' ? 'Aberta' : idea.status}
           </Text>
         </View>
 
-        <Text style={styles.ideaTitle}>{idea.title}</Text>
-        {!!idea.description && (
-          <Text style={styles.ideaDescription}>{idea.description}</Text>
-        )}
-        <Text style={styles.dateText}>
-          {idea.author_id === user?.id ? 'Publicada por ti' : 'Ideia da comunidade'}
+        <Text style={styles.cardTitle}>{idea.title}</Text>
+
+        {idea.image_url ? (
+          <Image
+            source={{ uri: idea.image_url }}
+            style={styles.ideaImage}
+            resizeMode="cover"
+          />
+        ) : null}
+
+        <Text style={styles.cardDescription}>{idea.description}</Text>
+
+        <Text style={styles.cardMeta}>
+          Publicada em{' '}
+          {idea.created_at
+            ? new Date(idea.created_at).toLocaleDateString()
+            : 'data indisponível'}
         </Text>
+      </View>
+    );
+  }
+
+  function ProjectCard({ project }) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.categoryBadge}>Projeto</Text>
+        <Text style={styles.cardTitle}>{project.title}</Text>
+        <Text style={styles.cardDescription}>{project.description}</Text>
+        {project.province ? (
+          <Text style={styles.cardMeta}>{project.province}</Text>
+        ) : null}
+        <Text style={styles.cardMeta}>Estado: {project.status}</Text>
+      </View>
+    );
+  }
+
+  function ChallengeCard({ challenge }) {
+    return (
+      <View style={styles.card}>
+        <Text style={styles.categoryBadge}>
+          {challenge.category || 'Desafio comunitário'}
+        </Text>
+        <Text style={styles.cardTitle}>{challenge.title}</Text>
+        <Text style={styles.cardDescription}>{challenge.description}</Text>
+        <Text style={styles.cardMeta}>Estado: {challenge.status}</Text>
+        {challenge.deadline ? (
+          <Text style={styles.cardMeta}>
+            Prazo: {new Date(challenge.deadline).toLocaleDateString()}
+          </Text>
+        ) : null}
+      </View>
+    );
+  }
+
+  function CreateScreen() {
+    return (
+      <View style={styles.section}>
+        <Text style={styles.heading}>Partilha uma ideia</Text>
+        <Text style={styles.subheading}>
+          Uma ideia pode ser o início de uma solução para a tua comunidade.
+        </Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Título da ideia"
+          placeholderTextColor={COLORS.muted}
+          value={title}
+          onChangeText={setTitle}
+          maxLength={120}
+        />
+
+        <TextInput
+          style={[styles.input, styles.multilineInput]}
+          placeholder="Explica a tua ideia..."
+          placeholderTextColor={COLORS.muted}
+          value={description}
+          onChangeText={setDescription}
+          multiline
+          textAlignVertical="top"
+          maxLength={5000}
+        />
+
+        <Text style={styles.fieldLabel}>Categoria</Text>
+        <View style={styles.categoryList}>
+          {CATEGORIES.map((item) => (
+            <TouchableOpacity
+              key={item}
+              style={[
+                styles.categoryOption,
+                category === item && styles.categoryOptionSelected,
+              ]}
+              onPress={() => setCategory(category === item ? '' : item)}
+            >
+              <Text
+                style={[
+                  styles.categoryOptionText,
+                  category === item && styles.categoryOptionTextSelected,
+                ]}
+              >
+                {item}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        <TouchableOpacity
+          style={styles.imageButton}
+          onPress={selectIdeaImage}
+          disabled={saving}
+        >
+          <Text style={styles.imageButtonText}>
+            {ideaImageUri ? 'Escolher outra imagem' : '+ Adicionar imagem'}
+          </Text>
+        </TouchableOpacity>
+
+        {ideaImageUri ? (
+          <View>
+            <Image
+              source={{ uri: ideaImageUri }}
+              style={styles.ideaPreview}
+              resizeMode="cover"
+            />
+            <TouchableOpacity onPress={() => setIdeaImageUri(null)}>
+              <Text style={styles.removeImage}>Remover imagem</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        <TouchableOpacity
+          style={[styles.primaryButton, saving && styles.disabledButton]}
+          onPress={publishIdea}
+          disabled={saving}
+        >
+          {saving ? (
+            <ActivityIndicator color={COLORS.navy} />
+          ) : (
+            <Text style={styles.primaryButtonText}>Publicar ideia</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  function ProfileScreen() {
+    if (!user) {
+      return (
+        <View style={styles.section}>
+          <Text style={styles.heading}>
+            {isRegister ? 'Criar conta' : 'Bem-vindo ao KONECTA'}
+          </Text>
+          <Text style={styles.subheading}>
+            Entra na comunidade para partilhar ideias e colaborar em projetos.
+          </Text>
+
+          {isRegister ? (
+            <TextInput
+              style={styles.input}
+              placeholder="O teu nome"
+              placeholderTextColor={COLORS.muted}
+              value={displayName}
+              onChangeText={setDisplayName}
+            />
+          ) : null}
+
+          <TextInput
+            style={styles.input}
+            placeholder="Email"
+            placeholderTextColor={COLORS.muted}
+            value={email}
+            onChangeText={setEmail}
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
+
+          <TextInput
+            style={styles.input}
+            placeholder="Palavra-passe"
+            placeholderTextColor={COLORS.muted}
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry
+          />
+
+          <TouchableOpacity
+            style={[styles.primaryButton, saving && styles.disabledButton]}
+            onPress={handleAuth}
+            disabled={saving}
+          >
+            {saving ? (
+              <ActivityIndicator color={COLORS.navy} />
+            ) : (
+              <Text style={styles.primaryButtonText}>
+                {isRegister ? 'Criar conta' : 'Entrar'}
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.switchAuth}
+            onPress={() => setIsRegister(!isRegister)}
+          >
+            <Text style={styles.linkText}>
+              {isRegister
+                ? 'Já tens conta? Entrar'
+                : 'Ainda não tens conta? Criar conta'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.section}>
+        <Text style={styles.heading}>O teu perfil</Text>
+        <Text style={styles.profileEmail}>{user.email}</Text>
+        <Text style={styles.subheading}>
+          Continua a partilhar ideias e a colaborar com a comunidade.
+        </Text>
+
+        <View style={styles.statsRow}>
+          <View style={styles.statBox}>
+            <Text style={styles.statNumber}>
+              {ideas.filter((idea) => idea.author_id === user.id).length}
+            </Text>
+            <Text style={styles.statLabel}>Ideias carregadas</Text>
+          </View>
+          <View style={styles.statBox}>
+            <Text style={styles.statNumber}>
+              {projects.filter((project) => project.creator_id === user.id).length}
+            </Text>
+            <Text style={styles.statLabel}>Projetos carregados</Text>
+          </View>
+        </View>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={loadData}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Atualizar conteúdos</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.logoutButton}
+          onPress={logout}
+          disabled={saving}
+        >
+          <Text style={styles.logoutText}>Terminar sessão</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   function HomeScreen() {
     return (
-      <>
-        <Text style={styles.pageTitle}>A tua comunidade de ideias</Text>
-        <Text style={styles.subtitle}>
-          Descobre, participa e transforma ideias em ação.
-        </Text>
+      <View style={styles.section}>
+        <View style={styles.hero}>
+          <Text style={styles.heroEyebrow}>A comunidade começa contigo</Text>
+          <Text style={styles.heroTitle}>
+            Boas ideias merecem pessoas que as realizem.
+          </Text>
+          <Text style={styles.heroDescription}>
+            Descobre ideias, participa em desafios e encontra pessoas com vontade
+            de construir soluções em conjunto.
+          </Text>
 
-        <TouchableOpacity
-          style={styles.createPrompt}
-          onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
-        >
-          <View style={styles.avatarPlaceholder}>
-            <Text style={styles.avatarLetter}>K</Text>
-          </View>
-          <Text style={styles.promptText}>Que ideia queres partilhar?</Text>
-          <Text style={styles.promptPlus}>+</Text>
-        </TouchableOpacity>
-
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Ideias da comunidade</Text>
-          <TouchableOpacity onPress={() => setScreen('Descobrir')}>
-            <Text style={styles.linkText}>Ver todas</Text>
+          <TouchableOpacity
+            style={styles.heroButton}
+            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
+          >
+            <Text style={styles.heroButtonText}>Partilhar uma ideia</Text>
           </TouchableOpacity>
         </View>
 
-        {!user ? (
-          <View style={styles.infoPanel}>
-            <Text style={styles.infoTitle}>Entra no KONECTA</Text>
-            <Text style={styles.infoText}>
-              Inicia sessão para consultar as ideias e participar na comunidade.
-            </Text>
-            <TouchableOpacity
-              style={styles.primaryButton}
-              onPress={() => setScreen('Perfil')}
-            >
-              <Text style={styles.primaryButtonText}>Entrar ou criar conta</Text>
-            </TouchableOpacity>
-          </View>
+        <Text style={styles.heading}>Ideias da comunidade</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Pesquisar ideias..."
+          placeholderTextColor={COLORS.muted}
+          value={search}
+          onChangeText={setSearch}
+        />
+
+        {loading ? (
+          <ActivityIndicator
+            size="large"
+            color={COLORS.navy}
+            style={styles.loader}
+          />
         ) : filteredIdeas.length ? (
-          filteredIdeas.map((idea) => <IdeaCard key={idea.id} idea={idea} />)
+          filteredIdeas.map((idea) => (
+            <IdeaCard key={idea.id} idea={idea} />
+          ))
         ) : (
-          <Text style={styles.emptyText}>
-            Ainda não há ideias publicadas. Podes ser a primeira pessoa a partilhar uma.
-          </Text>
+          <EmptyState
+            title="Ainda não há ideias para mostrar"
+            description="Sê uma das primeiras pessoas a partilhar uma ideia com a comunidade."
+            action="Criar uma ideia"
+            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
+          />
         )}
-      </>
+
+        <TouchableOpacity style={styles.refreshButton} onPress={loadData}>
+          <Text style={styles.linkText}>Atualizar conteúdos</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
   function DiscoverScreen() {
     return (
-      <>
-        <Text style={styles.pageTitle}>Descobrir</Text>
-        <Text style={styles.subtitle}>
-          Encontra ideias, desafios e projectos da comunidade.
+      <View style={styles.section}>
+        <Text style={styles.heading}>Descobrir</Text>
+        <Text style={styles.subheading}>
+          Explora desafios e ideias que podem inspirar novas soluções.
         </Text>
 
-        <TextInput
-          style={styles.input}
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Pesquisar ideias..."
-          placeholderTextColor={MUTED}
-        />
+        <Text style={styles.sectionTitle}>Desafios</Text>
+        {challenges.length ? (
+          challenges.map((challenge) => (
+            <ChallengeCard key={challenge.id} challenge={challenge} />
+          ))
+        ) : (
+          <EmptyState
+            title="Sem desafios publicados"
+            description="Os desafios da comunidade aparecerão aqui quando forem criados."
+          />
+        )}
 
         <Text style={styles.sectionTitle}>Ideias</Text>
-        {!user ? (
-          <Text style={styles.emptyText}>Inicia sessão para consultar as ideias.</Text>
-        ) : filteredIdeas.length ? (
-          filteredIdeas.map((idea) => <IdeaCard key={idea.id} idea={idea} />)
+        {filteredIdeas.length ? (
+          filteredIdeas.map((idea) => (
+            <IdeaCard key={idea.id} idea={idea} />
+          ))
         ) : (
-          <Text style={styles.emptyText}>Nenhuma ideia encontrada.</Text>
+          <EmptyState
+            title="Sem ideias disponíveis"
+            description="Experimenta pesquisar novamente mais tarde."
+          />
         )}
-
-        <View style={styles.infoPanel}>
-          <Text style={styles.infoTitle}>Desafios reais</Text>
-          {challenges.length === 0 ? (
-            <Text style={styles.infoText}>Ainda não existem desafios publicados.</Text>
-          ) : (
-            challenges.map((challenge) => (
-              <View key={challenge.id} style={styles.listItem}>
-                <Text style={styles.ideaTitle}>{challenge.title}</Text>
-                {!!challenge.description && (
-                  <Text style={styles.ideaDescription}>{challenge.description}</Text>
-                )}
-                <Text style={styles.dateText}>Estado: {challenge.status}</Text>
-              </View>
-            ))
-          )}
-        </View>
-      </>
-    );
-  }
-
-  function CreateScreen() {
-    return (
-      <>
-        <Text style={styles.pageTitle}>Partilha uma ideia</Text>
-        <Text style={styles.subtitle}>
-          Uma boa ideia pode ser o começo de uma grande mudança.
-        </Text>
-
-        {!user ? (
-          <View style={styles.infoPanel}>
-            <Text style={styles.infoText}>
-              Precisas de iniciar sessão para publicar.
-            </Text>
-            <TouchableOpacity
-              style={styles.primaryButton}
-              onPress={() => setScreen('Perfil')}
-            >
-              <Text style={styles.primaryButtonText}>Entrar ou criar conta</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.formCard}>
-            <Text style={styles.label}>Título da ideia *</Text>
-            <TextInput
-              style={styles.input}
-              value={title}
-              onChangeText={setTitle}
-              placeholder="Ex.: Melhorar a nossa comunidade"
-              placeholderTextColor={MUTED}
-              maxLength={160}
-            />
-
-            <Text style={styles.label}>Descrição *</Text>
-            <TextInput
-              style={[styles.input, styles.multilineInput]}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Explica a tua ideia e como pode ser realizada..."
-              placeholderTextColor={MUTED}
-              multiline
-              maxLength={10000}
-            />
-
-            <Text style={styles.label}>Categoria (opcional)</Text>
-            <TextInput
-              style={styles.input}
-              value={category}
-              onChangeText={setCategory}
-              placeholder="Ex.: Educação, comunidade, inovação"
-              placeholderTextColor={MUTED}
-              maxLength={80}
-            />
-
-            <TouchableOpacity
-              style={[styles.primaryButton, saving && styles.disabledButton]}
-              onPress={publishIdea}
-              disabled={saving}
-            >
-              <Text style={styles.primaryButtonText}>
-                {saving ? 'A guardar...' : 'Publicar ideia'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </>
+      </View>
     );
   }
 
   function ProjectsScreen() {
     return (
-      <>
-        <Text style={styles.pageTitle}>Projetos</Text>
-        <Text style={styles.subtitle}>
-          Ideias transformadas em iniciativas com objetivos e equipas.
+      <View style={styles.section}>
+        <Text style={styles.heading}>Projetos</Text>
+        <Text style={styles.subheading}>
+          Descobre iniciativas e projetos partilhados pela comunidade.
         </Text>
 
-        {!user ? (
-          <Text style={styles.emptyText}>Inicia sessão para consultar projectos.</Text>
-        ) : projects.length === 0 ? (
-          <Text style={styles.emptyText}>
-            Ainda não existem projectos publicados.
-          </Text>
-        ) : (
+        {projects.length ? (
           projects.map((project) => (
-            <View key={project.id} style={styles.ideaCard}>
-              <Text style={styles.ideaTitle}>{project.title}</Text>
-              {!!project.description && (
-                <Text style={styles.ideaDescription}>{project.description}</Text>
-              )}
-              {!!project.province && (
-                <Text style={styles.dateText}>{project.province}</Text>
-              )}
-              <Text style={styles.dateText}>Estado: {project.status}</Text>
-            </View>
+            <ProjectCard key={project.id} project={project} />
           ))
+        ) : (
+          <EmptyState
+            title="Ainda não há projetos"
+            description="Os projetos disponíveis serão apresentados aqui."
+          />
         )}
-      </>
+
+        <TouchableOpacity style={styles.refreshButton} onPress={loadData}>
+          <Text style={styles.linkText}>Atualizar projetos</Text>
+        </TouchableOpacity>
+      </View>
     );
   }
 
-  function ProfileScreen() {
+  function EmptyState({ title: emptyTitle, description, action, onPress }) {
     return (
-      <>
-        <Text style={styles.pageTitle}>O teu perfil</Text>
-
-        {user ? (
-          <>
-            <View style={styles.profileCard}>
-              <View style={styles.largeAvatar}>
-                <Text style={styles.largeAvatarText}>
-                  {(user.email || 'K').charAt(0).toUpperCase()}
-                </Text>
-              </View>
-              <Text style={styles.profileName}>
-                {user.user_metadata?.display_name || 'Utilizador KONECTA'}
-              </Text>
-              <Text style={styles.subtitle}>{user.email}</Text>
-              <Text style={styles.infoText}>
-                Conta autenticada no Supabase.
-              </Text>
-              <TouchableOpacity style={styles.primaryButton} onPress={signOut}>
-                <Text style={styles.primaryButtonText}>Terminar sessão</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.infoPanel}>
-              <Text style={styles.infoTitle}>A tua participação</Text>
-              <Text style={styles.infoText}>
-                Ideias publicadas por ti: {ideas.filter((i) => i.author_id === user.id).length}
-              </Text>
-              <Text style={styles.infoText}>
-                Projectos criados por ti: {projects.filter((p) => p.creator_id === user.id).length}
-              </Text>
-            </View>
-          </>
-        ) : (
-          <View style={styles.formCard}>
-            <Text style={styles.infoTitle}>
-              {isRegister ? 'Criar conta' : 'Iniciar sessão'}
-            </Text>
-
-            {isRegister && (
-              <>
-                <Text style={styles.label}>Nome</Text>
-                <TextInput
-                  style={styles.input}
-                  value={displayName}
-                  onChangeText={setDisplayName}
-                  placeholder="O teu nome"
-                  placeholderTextColor={MUTED}
-                />
-              </>
-            )}
-
-            <Text style={styles.label}>E-mail</Text>
-            <TextInput
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              placeholder="nome@exemplo.com"
-              placeholderTextColor={MUTED}
-              autoCapitalize="none"
-              keyboardType="email-address"
-            />
-
-            <Text style={styles.label}>Palavra-passe</Text>
-            <TextInput
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              placeholder="Pelo menos 6 caracteres"
-              placeholderTextColor={MUTED}
-              secureTextEntry
-            />
-
-            <TouchableOpacity
-              style={[styles.primaryButton, saving && styles.disabledButton]}
-              onPress={authenticate}
-              disabled={saving}
-            >
-              <Text style={styles.primaryButtonText}>
-                {saving
-                  ? 'A processar...'
-                  : isRegister
-                  ? 'Criar conta'
-                  : 'Entrar'}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.switchAuth}
-              onPress={() => {
-                setIsRegister(!isRegister);
-                setNotice('');
-              }}
-            >
-              <Text style={styles.linkText}>
-                {isRegister
-                  ? 'Já tens conta? Inicia sessão'
-                  : 'Ainda não tens conta? Regista-te'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </>
+      <View style={styles.emptyState}>
+        <Text style={styles.emptyTitle}>{emptyTitle}</Text>
+        <Text style={styles.emptyDescription}>{description}</Text>
+        {action && onPress ? (
+          <TouchableOpacity style={styles.secondaryButton} onPress={onPress}>
+            <Text style={styles.secondaryButtonText}>{action}</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
     );
   }
 
@@ -631,56 +745,61 @@ export default function App() {
     }
   }
 
+  if (loading && !user && !ideas.length && !projects.length && !challenges.length) {
+    return (
+      <SafeAreaView style={styles.loadingScreen}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+        <Text style={styles.loadingLogo}>KONECTA</Text>
+        <ActivityIndicator size="large" color={COLORS.gold} />
+        <Text style={styles.loadingText}>A preparar a comunidade...</Text>
+      </SafeAreaView>
+    );
+  }
+
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar backgroundColor={NAVY} barStyle="light-content" />
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+
       <Header />
+      <Notice />
 
       <ScrollView
         style={styles.content}
         contentContainerStyle={styles.contentContainer}
         keyboardShouldPersistTaps="handled"
       >
-        {!!notice && (
-          <TouchableOpacity onPress={() => setNotice('')}>
-            <Text style={styles.notice}>{notice}  ×</Text>
-          </TouchableOpacity>
-        )}
-
-        {loading ? (
-          <ActivityIndicator color={NAVY} size="large" style={styles.loader} />
-        ) : (
-          renderScreen()
-        )}
+        {renderScreen()}
       </ScrollView>
 
       <View style={styles.bottomNav}>
-        {TABS.map((tab) => (
+        {['Inicio', 'Descobrir', 'Criar', 'Projetos', 'Perfil'].map((item) => (
           <TouchableOpacity
-            key={tab.id}
-            style={styles.navItem}
+            key={item}
+            style={[styles.navItem, screen === item && styles.navItemActive]}
             onPress={() => {
-              setScreen(tab.id);
-              setNotice('');
+              if (item === 'Criar' && !user) {
+                setScreen('Perfil');
+                setNotice('Inicia sessão para publicar uma ideia.');
+              } else {
+                setScreen(item);
+                setNotice('');
+              }
             }}
           >
             <Text
               style={[
-                styles.navIcon,
-                screen === tab.id && styles.activeNavIcon,
+                styles.navText,
+                screen === item && styles.navTextActive,
               ]}
             >
-              {tab.icon}
+              {item === 'Inicio'
+                ? 'Início'
+                : item === 'Descobrir'
+                ? 'Descobrir'
+                : item === 'Criar'
+                ? '+ Criar'
+                : item}
             </Text>
-            <Text
-              style={[
-                styles.navLabel,
-                screen === tab.id && styles.activeNavLabel,
-              ]}
-            >
-              {tab.label}
-            </Text>
-            {screen === tab.id && <View style={styles.activeLine} />}
           </TouchableOpacity>
         ))}
       </View>
@@ -689,89 +808,387 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: BG },
+  safeArea: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  loadingScreen: {
+    flex: 1,
+    backgroundColor: COLORS.navy,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  loadingLogo: {
+    color: COLORS.gold,
+    fontSize: 32,
+    fontWeight: '900',
+    letterSpacing: 2,
+    marginBottom: 24,
+  },
+  loadingText: {
+    color: COLORS.white,
+    marginTop: 14,
+  },
   header: {
-    backgroundColor: NAVY,
-    paddingHorizontal: 20,
-    paddingVertical: 17,
+    backgroundColor: COLORS.navy,
+    paddingHorizontal: 18,
+    paddingVertical: 15,
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  logo: {
+    color: COLORS.white,
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 1.5,
+  },
+  tagline: {
+    color: '#D8E2F0',
+    fontSize: 10,
+    marginTop: 3,
+  },
+  profileButton: {
+    backgroundColor: COLORS.gold,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 20,
+  },
+  profileButtonText: {
+    color: COLORS.navy,
+    fontWeight: '800',
+  },
+  notice: {
+    backgroundColor: COLORS.paleGold,
+    marginHorizontal: 12,
+    marginTop: 10,
+    padding: 11,
+    borderRadius: 10,
+  },
+  noticeText: {
+    color: COLORS.navy,
+    fontSize: 13,
+  },
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingBottom: 24,
+  },
+  section: {
+    padding: 16,
+  },
+  hero: {
+    backgroundColor: COLORS.navy,
+    borderRadius: 20,
+    padding: 22,
+    marginBottom: 24,
+  },
+  heroEyebrow: {
+    color: COLORS.gold,
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 12,
+  },
+  heroTitle: {
+    color: COLORS.white,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: '900',
+    marginBottom: 12,
+  },
+  heroDescription: {
+    color: '#E1E8F2',
+    fontSize: 14,
+    lineHeight: 22,
+    marginBottom: 20,
+  },
+  heroButton: {
+    backgroundColor: COLORS.gold,
+    borderRadius: 12,
+    padding: 14,
     alignItems: 'center',
   },
-  logo: { fontSize: 27, fontWeight: '900', color: '#FFFFFF', letterSpacing: 1 },
-  logoGold: { color: GOLD },
-  tagline: { color: '#E2E8F0', fontSize: 11, marginTop: 4 },
-  notification: {
-    height: 40, width: 40, borderRadius: 20,
-    backgroundColor: '#23436D', alignItems: 'center',
-    justifyContent: 'center',
+  heroButtonText: {
+    color: COLORS.navy,
+    fontWeight: '900',
   },
-  notificationText: { color: '#FFFFFF', fontSize: 22 },
-  content: { flex: 1 },
-  contentContainer: { padding: 18, paddingBottom: 30 },
-  pageTitle: { color: NAVY, fontSize: 24, fontWeight: '800', marginTop: 5 },
-  subtitle: { color: MUTED, fontSize: 14, lineHeight: 21, marginTop: 7, marginBottom: 18 },
-  createPrompt: {
-    backgroundColor: '#FFFFFF', padding: 13, borderRadius: 14,
-    flexDirection: 'row', alignItems: 'center',
-    borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 23,
+  heading: {
+    color: COLORS.navy,
+    fontSize: 24,
+    fontWeight: '900',
+    marginBottom: 8,
   },
-  avatarPlaceholder: {
-    width: 38, height: 38, borderRadius: 19, backgroundColor: NAVY,
-    justifyContent: 'center', alignItems: 'center',
+  subheading: {
+    color: COLORS.muted,
+    fontSize: 14,
+    lineHeight: 21,
+    marginBottom: 18,
   },
-  avatarLetter: { color: GOLD, fontWeight: '900', fontSize: 17 },
-  promptText: { flex: 1, color: MUTED, marginLeft: 11, fontSize: 13 },
-  promptPlus: { color: NAVY, fontSize: 26, fontWeight: '700' },
-  sectionHeader: {
-    flexDirection: 'row', justifyContent: 'space-between',
-    alignItems: 'center', marginBottom: 13,
+  sectionTitle: {
+    color: COLORS.navy,
+    fontSize: 19,
+    fontWeight: '800',
+    marginTop: 20,
+    marginBottom: 12,
   },
-  sectionTitle: { color: NAVY, fontSize: 18, fontWeight: '800', marginBottom: 12 },
-  linkText: { color: NAVY, fontSize: 13, fontWeight: '700' },
-  ideaCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 14, padding: 16,
-    borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 13,
+  fieldLabel: {
+    color: COLORS.text,
+    fontWeight: '700',
+    marginBottom: 10,
   },
-  categoryRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 11 },
-  categoryBadge: { backgroundColor: '#FFF4D5', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20 },
-  categoryText: { color: NAVY, fontSize: 11, fontWeight: '700' },
-  smallText: { color: MUTED, fontSize: 11, marginLeft: 9 },
-  ideaTitle: { color: NAVY, fontSize: 17, fontWeight: '800', lineHeight: 24 },
-  ideaDescription: { color: MUTED, fontSize: 13, lineHeight: 20, marginTop: 7 },
-  dateText: { color: MUTED, fontSize: 11, marginTop: 10 },
   input: {
-    backgroundColor: '#FFFFFF', borderRadius: 11, padding: 13,
-    borderWidth: 1, borderColor: '#CBD5E1', color: NAVY,
-    fontSize: 14, marginBottom: 17,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+    color: COLORS.text,
+    fontSize: 15,
+    marginBottom: 14,
   },
-  multilineInput: { minHeight: 125, textAlignVertical: 'top' },
-  label: { color: NAVY, fontSize: 13, fontWeight: '700', marginBottom: 8 },
-  formCard: { backgroundColor: '#FFFFFF', padding: 16, borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0' },
-  primaryButton: { backgroundColor: NAVY, padding: 15, borderRadius: 11, alignItems: 'center', marginTop: 9 },
-  primaryButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
-  disabledButton: { opacity: 0.6 },
-  notice: { color: NAVY, backgroundColor: '#FFF4D5', padding: 12, borderRadius: 10, marginBottom: 12, fontSize: 12 },
-  infoPanel: { backgroundColor: '#FFFFFF', padding: 18, borderRadius: 14, borderWidth: 1, borderColor: '#E2E8F0', marginBottom: 14 },
-  infoTitle: { color: NAVY, fontSize: 18, fontWeight: '800' },
-  infoText: { color: MUTED, fontSize: 13, lineHeight: 21, marginTop: 8 },
-  emptyText: { color: MUTED, padding: 20, textAlign: 'center', lineHeight: 22 },
-  profileCard: { alignItems: 'center', padding: 22, backgroundColor: '#FFFFFF', borderRadius: 14, marginBottom: 14 },
-  largeAvatar: { height: 76, width: 76, borderRadius: 38, backgroundColor: NAVY, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
-  largeAvatarText: { color: GOLD, fontSize: 30, fontWeight: '900' },
-  profileName: { color: NAVY, fontSize: 18, fontWeight: '800', textAlign: 'center' },
-  switchAuth: { alignItems: 'center', paddingVertical: 16 },
-  loader: { marginTop: 40 },
-  listItem: { borderTopWidth: 1, borderTopColor: '#EEF2F7', paddingTop: 13, marginTop: 13 },
+  multilineInput: {
+    minHeight: 130,
+    paddingTop: 14,
+  },
+  categoryList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginBottom: 12,
+  },
+  categoryOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    borderRadius: 20,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginRight: 8,
+    marginBottom: 8,
+  },
+  categoryOptionSelected: {
+    backgroundColor: COLORS.navy,
+    borderColor: COLORS.navy,
+  },
+  categoryOptionText: {
+    color: COLORS.text,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  categoryOptionTextSelected: {
+    color: COLORS.white,
+  },
+  imageButton: {
+    backgroundColor: COLORS.paleGold,
+    padding: 14,
+    borderRadius: 11,
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  imageButtonText: {
+    color: COLORS.navy,
+    fontWeight: '800',
+  },
+  ideaPreview: {
+    width: '100%',
+    height: 190,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  ideaImage: {
+    width: '100%',
+    height: 210,
+    borderRadius: 12,
+    marginTop: 12,
+    marginBottom: 8,
+    backgroundColor: COLORS.background,
+  },
+  removeImage: {
+    color: '#B42318',
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  primaryButton: {
+    backgroundColor: COLORS.gold,
+    paddingVertical: 15,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  primaryButtonText: {
+    color: COLORS.navy,
+    fontWeight: '900',
+    fontSize: 15,
+  },
+  disabledButton: {
+    opacity: 0.6,
+  },
+  card: {
+    backgroundColor: COLORS.white,
+    borderRadius: 15,
+    padding: 16,
+    marginBottom: 13,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  cardTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    marginBottom: 10,
+  },
+  categoryBadge: {
+    color: COLORS.navy,
+    backgroundColor: COLORS.paleGold,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    fontSize: 11,
+    fontWeight: '800',
+    alignSelf: 'flex-start',
+    marginBottom: 8,
+  },
+  statusText: {
+    color: COLORS.green,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  cardTitle: {
+    color: COLORS.navy,
+    fontSize: 18,
+    fontWeight: '800',
+    lineHeight: 24,
+  },
+  cardDescription: {
+    color: COLORS.text,
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+  },
+  cardMeta: {
+    color: COLORS.muted,
+    fontSize: 11,
+    marginTop: 10,
+  },
+  emptyState: {
+    backgroundColor: COLORS.white,
+    padding: 20,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  emptyTitle: {
+    color: COLORS.navy,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  emptyDescription: {
+    color: COLORS.muted,
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  secondaryButton: {
+    borderWidth: 1,
+    borderColor: COLORS.navy,
+    paddingVertical: 12,
+    paddingHorizontal: 15,
+    borderRadius: 10,
+    alignItems: 'center',
+    marginTop: 15,
+  },
+  secondaryButtonText: {
+    color: COLORS.navy,
+    fontWeight: '800',
+  },
+  refreshButton: {
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  linkText: {
+    color: COLORS.navy,
+    fontWeight: '800',
+  },
+  profileEmail: {
+    color: COLORS.text,
+    fontSize: 15,
+    marginVertical: 8,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  statBox: {
+    flex: 1,
+    backgroundColor: COLORS.white,
+    padding: 16,
+    borderRadius: 12,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  statNumber: {
+    color: COLORS.navy,
+    fontSize: 24,
+    fontWeight: '900',
+  },
+  statLabel: {
+    color: COLORS.muted,
+    fontSize: 11,
+    marginTop: 5,
+  },
+  switchAuth: {
+    alignItems: 'center',
+    padding: 16,
+  },
+  logoutButton: {
+    backgroundColor: '#FDE8E7',
+    padding: 14,
+    borderRadius: 11,
+    alignItems: 'center',
+    marginTop: 14,
+  },
+  logoutText: {
+    color: '#B42318',
+    fontWeight: '800',
+  },
   bottomNav: {
-    flexDirection: 'row', backgroundColor: '#FFFFFF',
-    borderTopWidth: 1, borderTopColor: '#E2E8F0',
-    paddingTop: 8, paddingBottom: 5,
+    flexDirection: 'row',
+    backgroundColor: COLORS.white,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 9,
+    paddingBottom: 8,
   },
-  navItem: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 5 },
-  navIcon: { color: MUTED, fontSize: 22, fontWeight: '600' },
-  activeNavIcon: { color: NAVY },
-  navLabel: { color: MUTED, fontSize: 10, marginTop: 3 },
-  activeNavLabel: { color: NAVY, fontWeight: '800' },
-  activeLine: { width: 20, height: 3, backgroundColor: GOLD, borderRadius: 3, marginTop: 5 },
+  navItem: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 2,
+    borderRadius: 9,
+  },
+  navItemActive: {
+    backgroundColor: COLORS.paleGold,
+  },
+  navText: {
+    color: COLORS.muted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  navTextActive: {
+    color: COLORS.navy,
+    fontWeight: '900',
+  },
+  loader: {
+    marginTop: 24,
+    marginBottom: 24,
+  },
 });
