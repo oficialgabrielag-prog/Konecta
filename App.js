@@ -11,13 +11,13 @@ import {
   StyleSheet,
   ActivityIndicator,
   Image,
-  Alert,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from './lib/supabase';
 import { uploadImage } from './lib/cloudinary';
 
-const COLORS = {
+const C = {
   navy: '#102D57',
   gold: '#F5BD35',
   white: '#FFFFFF',
@@ -27,6 +27,7 @@ const COLORS = {
   border: '#E1E7EF',
   paleGold: '#FFF4D5',
   green: '#18794E',
+  red: '#B42318',
 };
 
 const CATEGORIES = [
@@ -40,6 +41,14 @@ const CATEGORIES = [
   'Outros',
 ];
 
+function formatDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : date.toLocaleDateString();
+}
+
 export default function App() {
   const [screen, setScreen] = useState('Inicio');
   const [user, setUser] = useState(null);
@@ -51,6 +60,7 @@ export default function App() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [category, setCategory] = useState('');
+  const [ideaImageUri, setIdeaImageUri] = useState(null);
   const [search, setSearch] = useState('');
 
   const [email, setEmail] = useState('');
@@ -58,24 +68,27 @@ export default function App() {
   const [displayName, setDisplayName] = useState('');
   const [isRegister, setIsRegister] = useState(false);
 
-  const [ideaImageUri, setIdeaImageUri] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
 
   useEffect(() => {
-    let mounted = true;
+    let active = true;
 
     async function initialise() {
       try {
         const { data, error } = await supabase.auth.getSession();
-
         if (error) throw error;
-        if (mounted) setUser(data.session?.user ?? null);
+
+        if (active) {
+          setUser(data.session?.user ?? null);
+        }
       } catch (error) {
-        if (mounted) setNotice(error.message || 'Não foi possível verificar a sessão.');
+        if (active) {
+          setNotice(error.message || 'Não foi possível verificar a sessão.');
+        }
       } finally {
-        if (mounted) setLoading(false);
+        if (active) setLoading(false);
       }
     }
 
@@ -88,7 +101,7 @@ export default function App() {
     });
 
     return () => {
-      mounted = false;
+      active = false;
       subscription.unsubscribe();
     };
   }, []);
@@ -99,32 +112,34 @@ export default function App() {
 
   async function loadData() {
     setLoading(true);
-    setNotice('');
 
     try {
-      const [
-        ideasResult,
-        projectsResult,
-        challengesResult,
-      ] = await Promise.all([
-        supabase
-          .from('ideas')
-          .select('id, author_id, title, description, category, status, image_url, created_at')
-          .order('created_at', { ascending: false })
-          .limit(100),
+      const [ideasResult, projectsResult, challengesResult] =
+        await Promise.all([
+          supabase
+            .from('ideas')
+            .select(
+              'id, author_id, title, description, category, status, image_url, created_at'
+            )
+            .order('created_at', { ascending: false })
+            .limit(100),
 
-        supabase
-          .from('projects')
-          .select('id, creator_id, title, description, province, status, created_at')
-          .order('created_at', { ascending: false })
-          .limit(100),
+          supabase
+            .from('projects')
+            .select(
+              'id, creator_id, title, description, province, status, created_at'
+            )
+            .order('created_at', { ascending: false })
+            .limit(100),
 
-        supabase
-          .from('challenges')
-          .select('id, creator_id, title, description, category, status, deadline, created_at')
-          .order('created_at', { ascending: false })
-          .limit(100),
-      ]);
+          supabase
+            .from('challenges')
+            .select(
+              'id, creator_id, title, description, category, status, deadline, created_at'
+            )
+            .order('created_at', { ascending: false })
+            .limit(100),
+        ]);
 
       if (ideasResult.error) throw ideasResult.error;
       if (projectsResult.error) throw projectsResult.error;
@@ -170,10 +185,23 @@ export default function App() {
         if (error) throw error;
 
         if (data.user && data.session) {
-          await saveProfile(data.user, displayName.trim());
+          const { error: profileError } = await supabase
+            .from('profiles')
+            .upsert(
+              {
+                id: data.user.id,
+                display_name: displayName.trim(),
+              },
+              { onConflict: 'id' }
+            );
+
+          if (profileError) throw profileError;
+
           setNotice('Conta criada com sucesso.');
         } else {
-          setNotice('Conta criada. Confirma o teu email para concluir o registo.');
+          setNotice(
+            'Conta criada. Confirma o teu email para concluir o registo.'
+          );
         }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
@@ -182,26 +210,15 @@ export default function App() {
         });
 
         if (error) throw error;
+
         setNotice('Sessão iniciada com sucesso.');
+        setScreen('Inicio');
       }
     } catch (error) {
       setNotice(error.message || 'Não foi possível autenticar.');
     } finally {
       setSaving(false);
     }
-  }
-
-  async function saveProfile(authUser, name) {
-    const { error } = await supabase.from('profiles').upsert(
-      {
-        id: authUser.id,
-        display_name: name || authUser.user_metadata?.display_name || '',
-        username: authUser.user_metadata?.username || null,
-      },
-      { onConflict: 'id' }
-    );
-
-    if (error) throw error;
   }
 
   async function logout() {
@@ -222,7 +239,8 @@ export default function App() {
 
   async function selectIdeaImage() {
     try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      const permission =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
 
       if (!permission.granted) {
         setNotice('Permite o acesso à galeria para escolher uma imagem.');
@@ -236,7 +254,7 @@ export default function App() {
         quality: 0.8,
       });
 
-      if (!result.canceled && result.assets?.length) {
+      if (!result.canceled && result.assets?.[0]?.uri) {
         setIdeaImageUri(result.assets[0].uri);
         setNotice('');
       }
@@ -273,7 +291,7 @@ export default function App() {
         author_id: user.id,
         title: title.trim(),
         description: description.trim(),
-        category: category.trim() || null,
+        category: category || null,
         status: 'open',
         image_url: imageUrl,
       });
@@ -296,8 +314,16 @@ export default function App() {
   }
 
   const filteredIdeas = ideas.filter((idea) => {
-    const text = `${idea.title || ''} ${idea.description || ''} ${idea.category || ''}`;
-    return text.toLowerCase().includes(search.toLowerCase());
+    const value = [
+      idea.title,
+      idea.description,
+      idea.category,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    return value.includes(search.trim().toLowerCase());
   });
 
   function Header() {
@@ -305,15 +331,17 @@ export default function App() {
       <View style={styles.header}>
         <TouchableOpacity onPress={() => setScreen('Inicio')}>
           <Text style={styles.logo}>KONECTA</Text>
-          <Text style={styles.tagline}>Ideias que unem. Pessoas que realizam.</Text>
+          <Text style={styles.tagline}>
+            Ideias que unem. Pessoas que realizam.
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.profileButton}
+          style={styles.headerButton}
           onPress={() => setScreen('Perfil')}
         >
-          <Text style={styles.profileButtonText}>
-            {user ? 'Perfil' : 'Entrar'}
+          <Text style={styles.headerButtonText}>
+            {user ? 'Meu perfil' : 'Entrar'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -327,20 +355,37 @@ export default function App() {
       <TouchableOpacity
         style={styles.notice}
         onPress={() => setNotice('')}
+        accessibilityRole="button"
       >
         <Text style={styles.noticeText}>{notice}</Text>
+        <Text style={styles.noticeDismiss}>Fechar</Text>
       </TouchableOpacity>
+    );
+  }
+
+  function EmptyState({ title: heading, description: detail, action, onPress }) {
+    return (
+      <View style={styles.empty}>
+        <Text style={styles.emptyTitle}>{heading}</Text>
+        <Text style={styles.emptyText}>{detail}</Text>
+
+        {action && onPress ? (
+          <TouchableOpacity style={styles.outlineButton} onPress={onPress}>
+            <Text style={styles.outlineButtonText}>{action}</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
     );
   }
 
   function IdeaCard({ idea }) {
     return (
       <View style={styles.card}>
-        <View style={styles.cardTop}>
-          <Text style={styles.categoryBadge}>
+        <View style={styles.cardHeader}>
+          <Text style={styles.badge}>
             {idea.category || 'Ideia da comunidade'}
           </Text>
-          <Text style={styles.statusText}>
+          <Text style={styles.status}>
             {idea.status === 'open' ? 'Aberta' : idea.status}
           </Text>
         </View>
@@ -357,11 +402,8 @@ export default function App() {
 
         <Text style={styles.cardDescription}>{idea.description}</Text>
 
-        <Text style={styles.cardMeta}>
-          Publicada em{' '}
-          {idea.created_at
-            ? new Date(idea.created_at).toLocaleDateString()
-            : 'data indisponível'}
+        <Text style={styles.meta}>
+          {formatDate(idea.created_at)}
         </Text>
       </View>
     );
@@ -370,13 +412,13 @@ export default function App() {
   function ProjectCard({ project }) {
     return (
       <View style={styles.card}>
-        <Text style={styles.categoryBadge}>Projeto</Text>
+        <Text style={styles.badge}>Projeto</Text>
         <Text style={styles.cardTitle}>{project.title}</Text>
         <Text style={styles.cardDescription}>{project.description}</Text>
         {project.province ? (
-          <Text style={styles.cardMeta}>{project.province}</Text>
+          <Text style={styles.meta}>{project.province}</Text>
         ) : null}
-        <Text style={styles.cardMeta}>Estado: {project.status}</Text>
+        <Text style={styles.meta}>Estado: {project.status}</Text>
       </View>
     );
   }
@@ -384,17 +426,137 @@ export default function App() {
   function ChallengeCard({ challenge }) {
     return (
       <View style={styles.card}>
-        <Text style={styles.categoryBadge}>
+        <Text style={styles.badge}>
           {challenge.category || 'Desafio comunitário'}
         </Text>
         <Text style={styles.cardTitle}>{challenge.title}</Text>
         <Text style={styles.cardDescription}>{challenge.description}</Text>
-        <Text style={styles.cardMeta}>Estado: {challenge.status}</Text>
+        <Text style={styles.meta}>Estado: {challenge.status}</Text>
         {challenge.deadline ? (
-          <Text style={styles.cardMeta}>
-            Prazo: {new Date(challenge.deadline).toLocaleDateString()}
+          <Text style={styles.meta}>
+            Prazo: {formatDate(challenge.deadline)}
           </Text>
         ) : null}
+      </View>
+    );
+  }
+
+  function HomeScreen() {
+    return (
+      <View style={styles.section}>
+        <View style={styles.hero}>
+          <Text style={styles.heroLabel}>A comunidade começa contigo</Text>
+          <Text style={styles.heroTitle}>
+            Boas ideias merecem pessoas que as realizem.
+          </Text>
+          <Text style={styles.heroText}>
+            Descobre ideias, participa em desafios e encontra pessoas
+            com vontade de construir soluções em conjunto.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.heroButton}
+            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
+          >
+            <Text style={styles.heroButtonText}>Partilhar uma ideia</Text>
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.heading}>Ideias da comunidade</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Pesquisar ideias..."
+          placeholderTextColor={C.muted}
+          value={search}
+          onChangeText={setSearch}
+        />
+
+        {loading ? (
+          <ActivityIndicator
+            color={C.navy}
+            size="large"
+            style={styles.loader}
+          />
+        ) : filteredIdeas.length ? (
+          filteredIdeas.map((idea) => (
+            <IdeaCard key={idea.id} idea={idea} />
+          ))
+        ) : (
+          <EmptyState
+            title="Ainda não há ideias para mostrar"
+            description="Partilha a primeira ideia e inspira a comunidade."
+            action="Criar uma ideia"
+            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
+          />
+        )}
+
+        <TouchableOpacity style={styles.refresh} onPress={loadData}>
+          <Text style={styles.link}>Atualizar conteúdos</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  function DiscoverScreen() {
+    return (
+      <View style={styles.section}>
+        <Text style={styles.heading}>Descobrir</Text>
+        <Text style={styles.subtitle}>
+          Explora iniciativas e desafios partilhados pela comunidade.
+        </Text>
+
+        <Text style={styles.sectionHeading}>Desafios</Text>
+
+        {challenges.length ? (
+          challenges.map((item) => (
+            <ChallengeCard key={item.id} challenge={item} />
+          ))
+        ) : (
+          <EmptyState
+            title="Sem desafios publicados"
+            description="Os desafios aparecerão aqui quando existirem."
+          />
+        )}
+
+        <Text style={styles.sectionHeading}>Ideias</Text>
+
+        {filteredIdeas.length ? (
+          filteredIdeas.map((idea) => (
+            <IdeaCard key={idea.id} idea={idea} />
+          ))
+        ) : (
+          <EmptyState
+            title="Sem ideias disponíveis"
+            description="Tenta novamente mais tarde."
+          />
+        )}
+      </View>
+    );
+  }
+
+  function ProjectsScreen() {
+    return (
+      <View style={styles.section}>
+        <Text style={styles.heading}>Projetos</Text>
+        <Text style={styles.subtitle}>
+          Descobre iniciativas e projetos da comunidade.
+        </Text>
+
+        {projects.length ? (
+          projects.map((project) => (
+            <ProjectCard key={project.id} project={project} />
+          ))
+        ) : (
+          <EmptyState
+            title="Ainda não há projetos"
+            description="Os projetos publicados serão apresentados aqui."
+          />
+        )}
+
+        <TouchableOpacity style={styles.refresh} onPress={loadData}>
+          <Text style={styles.link}>Atualizar projetos</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -402,24 +564,26 @@ export default function App() {
   function CreateScreen() {
     return (
       <View style={styles.section}>
-        <Text style={styles.heading}>Partilha uma ideia</Text>
-        <Text style={styles.subheading}>
-          Uma ideia pode ser o início de uma solução para a tua comunidade.
+        <Text style={styles.heading}>Partilhar uma ideia</Text>
+        <Text style={styles.subtitle}>
+          Explica a tua ideia e ajuda a transformar boas propostas em soluções.
         </Text>
 
+        <Text style={styles.fieldLabel}>Título</Text>
         <TextInput
           style={styles.input}
-          placeholder="Título da ideia"
-          placeholderTextColor={COLORS.muted}
+          placeholder="Qual é a tua ideia?"
+          placeholderTextColor={C.muted}
           value={title}
           onChangeText={setTitle}
           maxLength={120}
         />
 
+        <Text style={styles.fieldLabel}>Descrição</Text>
         <TextInput
-          style={[styles.input, styles.multilineInput]}
-          placeholder="Explica a tua ideia..."
-          placeholderTextColor={COLORS.muted}
+          style={[styles.input, styles.multiline]}
+          placeholder="Explica como funciona e que problema pode resolver..."
+          placeholderTextColor={C.muted}
           value={description}
           onChangeText={setDescription}
           multiline
@@ -428,20 +592,22 @@ export default function App() {
         />
 
         <Text style={styles.fieldLabel}>Categoria</Text>
-        <View style={styles.categoryList}>
+        <View style={styles.categories}>
           {CATEGORIES.map((item) => (
             <TouchableOpacity
               key={item}
               style={[
                 styles.categoryOption,
-                category === item && styles.categoryOptionSelected,
+                category === item && styles.categorySelected,
               ]}
-              onPress={() => setCategory(category === item ? '' : item)}
+              onPress={() =>
+                setCategory(category === item ? '' : item)
+              }
             >
               <Text
                 style={[
-                  styles.categoryOptionText,
-                  category === item && styles.categoryOptionTextSelected,
+                  styles.categoryText,
+                  category === item && styles.categoryTextSelected,
                 ]}
               >
                 {item}
@@ -464,7 +630,7 @@ export default function App() {
           <View>
             <Image
               source={{ uri: ideaImageUri }}
-              style={styles.ideaPreview}
+              style={styles.preview}
               resizeMode="cover"
             />
             <TouchableOpacity onPress={() => setIdeaImageUri(null)}>
@@ -474,12 +640,12 @@ export default function App() {
         ) : null}
 
         <TouchableOpacity
-          style={[styles.primaryButton, saving && styles.disabledButton]}
+          style={[styles.primaryButton, saving && styles.disabled]}
           onPress={publishIdea}
           disabled={saving}
         >
           {saving ? (
-            <ActivityIndicator color={COLORS.navy} />
+            <ActivityIndicator color={C.navy} />
           ) : (
             <Text style={styles.primaryButtonText}>Publicar ideia</Text>
           )}
@@ -493,48 +659,54 @@ export default function App() {
       return (
         <View style={styles.section}>
           <Text style={styles.heading}>
-            {isRegister ? 'Criar conta' : 'Bem-vindo ao KONECTA'}
+            {isRegister ? 'Criar conta' : 'Entrar no KONECTA'}
           </Text>
-          <Text style={styles.subheading}>
-            Entra na comunidade para partilhar ideias e colaborar em projetos.
+          <Text style={styles.subtitle}>
+            Junta-te à comunidade para partilhar ideias e colaborar.
           </Text>
 
           {isRegister ? (
-            <TextInput
-              style={styles.input}
-              placeholder="O teu nome"
-              placeholderTextColor={COLORS.muted}
-              value={displayName}
-              onChangeText={setDisplayName}
-            />
+            <>
+              <Text style={styles.fieldLabel}>Nome</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="O teu nome"
+                placeholderTextColor={C.muted}
+                value={displayName}
+                onChangeText={setDisplayName}
+              />
+            </>
           ) : null}
 
+          <Text style={styles.fieldLabel}>Email</Text>
           <TextInput
             style={styles.input}
-            placeholder="Email"
-            placeholderTextColor={COLORS.muted}
+            placeholder="nome@exemplo.com"
+            placeholderTextColor={C.muted}
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
             autoCapitalize="none"
+            autoCorrect={false}
           />
 
+          <Text style={styles.fieldLabel}>Palavra-passe</Text>
           <TextInput
             style={styles.input}
-            placeholder="Palavra-passe"
-            placeholderTextColor={COLORS.muted}
+            placeholder="Introduz a palavra-passe"
+            placeholderTextColor={C.muted}
             value={password}
             onChangeText={setPassword}
             secureTextEntry
           />
 
           <TouchableOpacity
-            style={[styles.primaryButton, saving && styles.disabledButton]}
+            style={[styles.primaryButton, saving && styles.disabled]}
             onPress={handleAuth}
             disabled={saving}
           >
             {saving ? (
-              <ActivityIndicator color={COLORS.navy} />
+              <ActivityIndicator color={C.navy} />
             ) : (
               <Text style={styles.primaryButtonText}>
                 {isRegister ? 'Criar conta' : 'Entrar'}
@@ -544,9 +716,12 @@ export default function App() {
 
           <TouchableOpacity
             style={styles.switchAuth}
-            onPress={() => setIsRegister(!isRegister)}
+            onPress={() => {
+              setIsRegister(!isRegister);
+              setNotice('');
+            }}
           >
-            <Text style={styles.linkText}>
+            <Text style={styles.link}>
               {isRegister
                 ? 'Já tens conta? Entrar'
                 : 'Ainda não tens conta? Criar conta'}
@@ -556,35 +731,38 @@ export default function App() {
       );
     }
 
+    const myIdeas = ideas.filter((item) => item.author_id === user.id);
+    const myProjects = projects.filter(
+      (item) => item.creator_id === user.id
+    );
+
     return (
       <View style={styles.section}>
         <Text style={styles.heading}>O teu perfil</Text>
         <Text style={styles.profileEmail}>{user.email}</Text>
-        <Text style={styles.subheading}>
+        <Text style={styles.subtitle}>
           Continua a partilhar ideias e a colaborar com a comunidade.
         </Text>
 
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
-            <Text style={styles.statNumber}>
-              {ideas.filter((idea) => idea.author_id === user.id).length}
-            </Text>
+            <Text style={styles.statNumber}>{myIdeas.length}</Text>
             <Text style={styles.statLabel}>Ideias carregadas</Text>
           </View>
           <View style={styles.statBox}>
-            <Text style={styles.statNumber}>
-              {projects.filter((project) => project.creator_id === user.id).length}
-            </Text>
+            <Text style={styles.statNumber}>{myProjects.length}</Text>
             <Text style={styles.statLabel}>Projetos carregados</Text>
           </View>
         </View>
 
         <TouchableOpacity
-          style={styles.secondaryButton}
+          style={styles.outlineButton}
           onPress={loadData}
           disabled={loading}
         >
-          <Text style={styles.secondaryButtonText}>Atualizar conteúdos</Text>
+          <Text style={styles.outlineButtonText}>
+            Atualizar conteúdos
+          </Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -598,159 +776,23 @@ export default function App() {
     );
   }
 
-  function HomeScreen() {
-    return (
-      <View style={styles.section}>
-        <View style={styles.hero}>
-          <Text style={styles.heroEyebrow}>A comunidade começa contigo</Text>
-          <Text style={styles.heroTitle}>
-            Boas ideias merecem pessoas que as realizem.
-          </Text>
-          <Text style={styles.heroDescription}>
-            Descobre ideias, participa em desafios e encontra pessoas com vontade
-            de construir soluções em conjunto.
-          </Text>
-
-          <TouchableOpacity
-            style={styles.heroButton}
-            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
-          >
-            <Text style={styles.heroButtonText}>Partilhar uma ideia</Text>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={styles.heading}>Ideias da comunidade</Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Pesquisar ideias..."
-          placeholderTextColor={COLORS.muted}
-          value={search}
-          onChangeText={setSearch}
-        />
-
-        {loading ? (
-          <ActivityIndicator
-            size="large"
-            color={COLORS.navy}
-            style={styles.loader}
-          />
-        ) : filteredIdeas.length ? (
-          filteredIdeas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} />
-          ))
-        ) : (
-          <EmptyState
-            title="Ainda não há ideias para mostrar"
-            description="Sê uma das primeiras pessoas a partilhar uma ideia com a comunidade."
-            action="Criar uma ideia"
-            onPress={() => setScreen(user ? 'Criar' : 'Perfil')}
-          />
-        )}
-
-        <TouchableOpacity style={styles.refreshButton} onPress={loadData}>
-          <Text style={styles.linkText}>Atualizar conteúdos</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  function DiscoverScreen() {
-    return (
-      <View style={styles.section}>
-        <Text style={styles.heading}>Descobrir</Text>
-        <Text style={styles.subheading}>
-          Explora desafios e ideias que podem inspirar novas soluções.
-        </Text>
-
-        <Text style={styles.sectionTitle}>Desafios</Text>
-        {challenges.length ? (
-          challenges.map((challenge) => (
-            <ChallengeCard key={challenge.id} challenge={challenge} />
-          ))
-        ) : (
-          <EmptyState
-            title="Sem desafios publicados"
-            description="Os desafios da comunidade aparecerão aqui quando forem criados."
-          />
-        )}
-
-        <Text style={styles.sectionTitle}>Ideias</Text>
-        {filteredIdeas.length ? (
-          filteredIdeas.map((idea) => (
-            <IdeaCard key={idea.id} idea={idea} />
-          ))
-        ) : (
-          <EmptyState
-            title="Sem ideias disponíveis"
-            description="Experimenta pesquisar novamente mais tarde."
-          />
-        )}
-      </View>
-    );
-  }
-
-  function ProjectsScreen() {
-    return (
-      <View style={styles.section}>
-        <Text style={styles.heading}>Projetos</Text>
-        <Text style={styles.subheading}>
-          Descobre iniciativas e projetos partilhados pela comunidade.
-        </Text>
-
-        {projects.length ? (
-          projects.map((project) => (
-            <ProjectCard key={project.id} project={project} />
-          ))
-        ) : (
-          <EmptyState
-            title="Ainda não há projetos"
-            description="Os projetos disponíveis serão apresentados aqui."
-          />
-        )}
-
-        <TouchableOpacity style={styles.refreshButton} onPress={loadData}>
-          <Text style={styles.linkText}>Atualizar projetos</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  function EmptyState({ title: emptyTitle, description, action, onPress }) {
-    return (
-      <View style={styles.emptyState}>
-        <Text style={styles.emptyTitle}>{emptyTitle}</Text>
-        <Text style={styles.emptyDescription}>{description}</Text>
-        {action && onPress ? (
-          <TouchableOpacity style={styles.secondaryButton} onPress={onPress}>
-            <Text style={styles.secondaryButtonText}>{action}</Text>
-          </TouchableOpacity>
-        ) : null}
-      </View>
-    );
-  }
-
   function renderScreen() {
-    switch (screen) {
-      case 'Descobrir':
-        return <DiscoverScreen />;
-      case 'Criar':
-        return <CreateScreen />;
-      case 'Projetos':
-        return <ProjectsScreen />;
-      case 'Perfil':
-        return <ProfileScreen />;
-      default:
-        return <HomeScreen />;
-    }
+    if (screen === 'Descobrir') return <DiscoverScreen />;
+    if (screen === 'Criar') return <CreateScreen />;
+    if (screen === 'Projetos') return <ProjectsScreen />;
+    if (screen === 'Perfil') return <ProfileScreen />;
+    return <HomeScreen />;
   }
 
-  if (loading && !user && !ideas.length && !projects.length && !challenges.length) {
+  if (loading && !ideas.length && !projects.length && !challenges.length) {
     return (
       <SafeAreaView style={styles.loadingScreen}>
-        <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+        <StatusBar
+          barStyle="light-content"
+          backgroundColor={C.navy}
+        />
         <Text style={styles.loadingLogo}>KONECTA</Text>
-        <ActivityIndicator size="large" color={COLORS.gold} />
+        <ActivityIndicator color={C.gold} size="large" />
         <Text style={styles.loadingText}>A preparar a comunidade...</Text>
       </SafeAreaView>
     );
@@ -758,7 +800,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.navy} />
+      <StatusBar barStyle="light-content" backgroundColor={C.navy} />
 
       <Header />
       <Notice />
@@ -772,36 +814,40 @@ export default function App() {
       </ScrollView>
 
       <View style={styles.bottomNav}>
-        {['Inicio', 'Descobrir', 'Criar', 'Projetos', 'Perfil'].map((item) => (
-          <TouchableOpacity
-            key={item}
-            style={[styles.navItem, screen === item && styles.navItemActive]}
-            onPress={() => {
-              if (item === 'Criar' && !user) {
-                setScreen('Perfil');
-                setNotice('Inicia sessão para publicar uma ideia.');
-              } else {
+        {['Inicio', 'Descobrir', 'Criar', 'Projetos', 'Perfil'].map(
+          (item) => (
+            <TouchableOpacity
+              key={item}
+              style={[
+                styles.navItem,
+                screen === item && styles.navItemActive,
+              ]}
+              onPress={() => {
+                if (item === 'Criar' && !user) {
+                  setScreen('Perfil');
+                  setNotice('Inicia sessão para publicar uma ideia.');
+                  return;
+                }
+
                 setScreen(item);
                 setNotice('');
-              }
-            }}
-          >
-            <Text
-              style={[
-                styles.navText,
-                screen === item && styles.navTextActive,
-              ]}
+              }}
             >
-              {item === 'Inicio'
-                ? 'Início'
-                : item === 'Descobrir'
-                ? 'Descobrir'
-                : item === 'Criar'
-                ? '+ Criar'
-                : item}
-            </Text>
-          </TouchableOpacity>
-        ))}
+              <Text
+                style={[
+                  styles.navText,
+                  screen === item && styles.navTextActive,
+                ]}
+              >
+                {item === 'Inicio'
+                  ? 'Início'
+                  : item === 'Criar'
+                  ? '+ Criar'
+                  : item}
+              </Text>
+            </TouchableOpacity>
+          )
+        )}
       </View>
     </SafeAreaView>
   );
@@ -810,28 +856,29 @@ export default function App() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
+    ...(Platform.OS === 'web' ? { minHeight: '100vh' } : {}),
   },
   loadingScreen: {
     flex: 1,
-    backgroundColor: COLORS.navy,
-    justifyContent: 'center',
+    backgroundColor: C.navy,
     alignItems: 'center',
+    justifyContent: 'center',
     padding: 24,
   },
   loadingLogo: {
-    color: COLORS.gold,
+    color: C.gold,
     fontSize: 32,
     fontWeight: '900',
     letterSpacing: 2,
     marginBottom: 24,
   },
   loadingText: {
-    color: COLORS.white,
+    color: C.white,
     marginTop: 14,
   },
   header: {
-    backgroundColor: COLORS.navy,
+    backgroundColor: C.navy,
     paddingHorizontal: 18,
     paddingVertical: 15,
     flexDirection: 'row',
@@ -839,7 +886,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   logo: {
-    color: COLORS.white,
+    color: C.white,
     fontSize: 22,
     fontWeight: '900',
     letterSpacing: 1.5,
@@ -849,112 +896,121 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 3,
   },
-  profileButton: {
-    backgroundColor: COLORS.gold,
+  headerButton: {
+    backgroundColor: C.gold,
     paddingHorizontal: 14,
-    paddingVertical: 9,
-    borderRadius: 20,
+    paddingVertical: 10,
+    borderRadius: 22,
   },
-  profileButtonText: {
-    color: COLORS.navy,
-    fontWeight: '800',
+  headerButtonText: {
+    color: C.navy,
+    fontWeight: '900',
   },
   notice: {
-    backgroundColor: COLORS.paleGold,
+    backgroundColor: C.paleGold,
     marginHorizontal: 12,
     marginTop: 10,
-    padding: 11,
+    padding: 12,
     borderRadius: 10,
   },
   noticeText: {
-    color: COLORS.navy,
+    color: C.navy,
     fontSize: 13,
+  },
+  noticeDismiss: {
+    color: C.muted,
+    fontSize: 11,
+    marginTop: 5,
   },
   content: {
     flex: 1,
   },
   contentContainer: {
     paddingBottom: 24,
+    width: '100%',
+    maxWidth: 900,
+    alignSelf: 'center',
   },
   section: {
     padding: 16,
   },
   hero: {
-    backgroundColor: COLORS.navy,
+    backgroundColor: C.navy,
     borderRadius: 20,
-    padding: 22,
-    marginBottom: 24,
+    padding: 24,
+    marginBottom: 25,
   },
-  heroEyebrow: {
-    color: COLORS.gold,
+  heroLabel: {
+    color: C.gold,
     fontSize: 12,
-    fontWeight: '800',
+    fontWeight: '900',
     textTransform: 'uppercase',
     marginBottom: 12,
   },
   heroTitle: {
-    color: COLORS.white,
-    fontSize: 28,
-    lineHeight: 34,
+    color: C.white,
+    fontSize: 30,
+    lineHeight: 37,
     fontWeight: '900',
-    marginBottom: 12,
+    marginBottom: 14,
   },
-  heroDescription: {
+  heroText: {
     color: '#E1E8F2',
     fontSize: 14,
     lineHeight: 22,
-    marginBottom: 20,
+    marginBottom: 22,
   },
   heroButton: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: C.gold,
     borderRadius: 12,
-    padding: 14,
+    padding: 15,
     alignItems: 'center',
   },
   heroButtonText: {
-    color: COLORS.navy,
+    color: C.navy,
     fontWeight: '900',
   },
   heading: {
-    color: COLORS.navy,
-    fontSize: 24,
+    color: C.navy,
+    fontSize: 25,
     fontWeight: '900',
-    marginBottom: 8,
+    marginBottom: 9,
   },
-  subheading: {
-    color: COLORS.muted,
+  subtitle: {
+    color: C.muted,
     fontSize: 14,
-    lineHeight: 21,
-    marginBottom: 18,
+    lineHeight: 22,
+    marginBottom: 19,
   },
-  sectionTitle: {
-    color: COLORS.navy,
+  sectionHeading: {
+    color: C.navy,
     fontSize: 19,
-    fontWeight: '800',
+    fontWeight: '900',
     marginTop: 20,
     marginBottom: 12,
   },
   fieldLabel: {
-    color: COLORS.text,
-    fontWeight: '700',
-    marginBottom: 10,
+    color: C.text,
+    fontWeight: '800',
+    marginBottom: 8,
   },
   input: {
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 13,
-    color: COLORS.text,
+    paddingVertical: 14,
+    color: C.text,
     fontSize: 15,
-    marginBottom: 14,
+    marginBottom: 15,
+    width: '100%',
   },
-  multilineInput: {
+  multiline: {
     minHeight: 130,
     paddingTop: 14,
   },
-  categoryList: {
+  categories: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     marginBottom: 12,
@@ -963,56 +1019,56 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 9,
     borderRadius: 20,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
     marginRight: 8,
     marginBottom: 8,
   },
-  categoryOptionSelected: {
-    backgroundColor: COLORS.navy,
-    borderColor: COLORS.navy,
+  categorySelected: {
+    backgroundColor: C.navy,
+    borderColor: C.navy,
   },
-  categoryOptionText: {
-    color: COLORS.text,
+  categoryText: {
+    color: C.text,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  categoryOptionTextSelected: {
-    color: COLORS.white,
+  categoryTextSelected: {
+    color: C.white,
   },
   imageButton: {
-    backgroundColor: COLORS.paleGold,
-    padding: 14,
-    borderRadius: 11,
+    backgroundColor: C.paleGold,
+    padding: 15,
+    borderRadius: 12,
     alignItems: 'center',
     marginBottom: 14,
   },
   imageButtonText: {
-    color: COLORS.navy,
-    fontWeight: '800',
+    color: C.navy,
+    fontWeight: '900',
   },
-  ideaPreview: {
+  preview: {
     width: '100%',
-    height: 190,
+    height: 200,
     borderRadius: 12,
     marginBottom: 8,
   },
   ideaImage: {
     width: '100%',
-    height: 210,
+    height: 230,
     borderRadius: 12,
     marginTop: 12,
     marginBottom: 8,
-    backgroundColor: COLORS.background,
+    backgroundColor: C.background,
   },
   removeImage: {
-    color: '#B42318',
-    fontWeight: '700',
+    color: C.red,
+    fontWeight: '800',
     marginBottom: 16,
   },
   primaryButton: {
-    backgroundColor: COLORS.gold,
+    backgroundColor: C.gold,
     paddingVertical: 15,
     paddingHorizontal: 18,
     borderRadius: 12,
@@ -1020,104 +1076,103 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   primaryButtonText: {
-    color: COLORS.navy,
+    color: C.navy,
     fontWeight: '900',
     fontSize: 15,
   },
-  disabledButton: {
+  disabled: {
     opacity: 0.6,
   },
   card: {
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderRadius: 15,
     padding: 16,
-    marginBottom: 13,
+    marginBottom: 14,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
-  cardTop: {
+  cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     flexWrap: 'wrap',
-    marginBottom: 10,
+    marginBottom: 8,
   },
-  categoryBadge: {
-    color: COLORS.navy,
-    backgroundColor: COLORS.paleGold,
+  badge: {
+    color: C.navy,
+    backgroundColor: C.paleGold,
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 20,
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '900',
     alignSelf: 'flex-start',
-    marginBottom: 8,
+    overflow: 'hidden',
   },
-  statusText: {
-    color: COLORS.green,
+  status: {
+    color: C.green,
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '900',
   },
   cardTitle: {
-    color: COLORS.navy,
+    color: C.navy,
     fontSize: 18,
-    fontWeight: '800',
-    lineHeight: 24,
+    fontWeight: '900',
+    lineHeight: 25,
   },
   cardDescription: {
-    color: COLORS.text,
+    color: C.text,
     fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 22,
     marginTop: 8,
   },
-  cardMeta: {
-    color: COLORS.muted,
+  meta: {
+    color: C.muted,
     fontSize: 11,
     marginTop: 10,
   },
-  emptyState: {
-    backgroundColor: COLORS.white,
+  empty: {
+    backgroundColor: C.white,
     padding: 20,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    alignItems: 'flex-start',
+    borderColor: C.border,
     marginBottom: 14,
   },
   emptyTitle: {
-    color: COLORS.navy,
+    color: C.navy,
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '900',
     marginBottom: 8,
   },
-  emptyDescription: {
-    color: COLORS.muted,
+  emptyText: {
+    color: C.muted,
     fontSize: 13,
     lineHeight: 20,
   },
-  secondaryButton: {
+  outlineButton: {
     borderWidth: 1,
-    borderColor: COLORS.navy,
+    borderColor: C.navy,
     paddingVertical: 12,
     paddingHorizontal: 15,
     borderRadius: 10,
     alignItems: 'center',
     marginTop: 15,
   },
-  secondaryButtonText: {
-    color: COLORS.navy,
-    fontWeight: '800',
+  outlineButtonText: {
+    color: C.navy,
+    fontWeight: '900',
   },
-  refreshButton: {
-    paddingVertical: 12,
+  refresh: {
+    paddingVertical: 14,
     alignItems: 'center',
   },
-  linkText: {
-    color: COLORS.navy,
-    fontWeight: '800',
+  link: {
+    color: C.navy,
+    fontWeight: '900',
   },
   profileEmail: {
-    color: COLORS.text,
+    color: C.text,
     fontSize: 15,
     marginVertical: 8,
   },
@@ -1128,20 +1183,20 @@ const styles = StyleSheet.create({
   },
   statBox: {
     flex: 1,
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     padding: 16,
     borderRadius: 12,
     marginRight: 8,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: C.border,
   },
   statNumber: {
-    color: COLORS.navy,
+    color: C.navy,
     fontSize: 24,
     fontWeight: '900',
   },
   statLabel: {
-    color: COLORS.muted,
+    color: C.muted,
     fontSize: 11,
     marginTop: 5,
   },
@@ -1157,34 +1212,36 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   logoutText: {
-    color: '#B42318',
-    fontWeight: '800',
+    color: C.red,
+    fontWeight: '900',
   },
   bottomNav: {
     flexDirection: 'row',
-    backgroundColor: COLORS.white,
+    backgroundColor: C.white,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingTop: 9,
+    borderTopColor: C.border,
+    paddingTop: 8,
     paddingBottom: 8,
   },
   navItem: {
     flex: 1,
     alignItems: 'center',
-    paddingVertical: 8,
+    justifyContent: 'center',
+    paddingVertical: 10,
     paddingHorizontal: 2,
     borderRadius: 9,
   },
   navItemActive: {
-    backgroundColor: COLORS.paleGold,
+    backgroundColor: C.paleGold,
   },
   navText: {
-    color: COLORS.muted,
+    color: C.muted,
     fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '800',
+    textAlign: 'center',
   },
   navTextActive: {
-    color: COLORS.navy,
+    color: C.navy,
     fontWeight: '900',
   },
   loader: {
